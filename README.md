@@ -1,12 +1,18 @@
-# FlyRank TaskFlow: Full-Stack Task Management System (A4 Auth)
+# FlyRank TaskFlow: Full-Stack Task Management System
 
-A production-ready, full-stack CRUD application for managing tasks, now secured with Supabase Authentication. This project demonstrates a secure REST API with JWT verification, protected routes, and a reusable auth middleware.
+A production-ready, full-stack CRUD application for managing tasks, secured with Supabase Authentication. This project demonstrates a secure REST API with JWT verification, a beautiful React frontend with a premium Glassmorphism design, and strict multi-tenant data isolation.
 
 ## 🚀 Architecture & Tech Stack
 
+### Frontend (React + Vite)
+- **Framework**: React.js with Vite
+- **Styling**: Custom CSS with a stunning Light Glassmorphism theme, vibrant gradients, and micro-animations.
+- **Routing**: `react-router-dom` for client-side navigation (Login, Signup, Dashboard).
+- **State Management**: React Context (`AuthContext`) for global authentication state.
+
 ### Backend (Node.js + Express)
 - **Framework**: Express.js REST API.
-- **Identity Provider**: Supabase Auth
+- **Identity Provider**: Supabase Auth (utilizing the Admin API for rate-limit bypass during local dev).
 - **Security**: 
   - User accounts and token signing managed externally by Supabase.
   - API verifies JWTs locally via `supabase.auth.getUser()`.
@@ -15,17 +21,28 @@ A production-ready, full-stack CRUD application for managing tasks, now secured 
 
 ### Database Layer (SQLite via `sql.js`)
 - **Engine**: `sql.js` (WebAssembly port of SQLite).
+- **Multi-Tenancy**: Every task is securely tied to a `user_id`. Users can *only* read, create, update, and delete their own tasks.
 - **Data Access Layer**: All SQL operations are isolated in `db.js`.
 - **Persistence**: Auto-sync mechanism flushes the in-memory SQLite buffer to `tasks.db` on disk.
 
 ---
 
-## 🔒 Authentication Flow (The Trust Triangle)
+## 🎨 Premium Glassmorphism UI
+The frontend was completely redesigned from scratch to feature:
+- A bright, professional Light Glassmorphism theme.
+- Dynamic floating mesh backgrounds and particle animations.
+- Frosted glass cards (`backdrop-filter: blur(24px)`).
+- Seamless routing between beautiful Login, Signup, and Dashboard screens.
 
-1. **Sign up / Log in**: The client sends credentials (`email` + `password`) to Supabase.
-2. **The token**: Supabase checks the credentials and returns a JSON Web Token (JWT).
-3. **The request**: The client calls the backend API, attaching the JWT in an `Authorization: Bearer <token>` header.
-4. **Verification**: The Express middleware asks Supabase "is this token real?". If yes, the protected route executes.
+---
+
+## 🔒 Authentication Flow & Multi-Tenancy
+
+1. **Sign up**: The client sends a username, email, and password. The backend uses the Supabase Admin API to instantly create and verify the account (bypassing email rate limits).
+2. **Log in**: Supabase checks the credentials and returns a JSON Web Token (JWT).
+3. **The Request**: The React frontend automatically intercepts API calls and attaches the JWT in an `Authorization: Bearer <token>` header.
+4. **Verification**: The Express middleware verifies the token. 
+5. **Data Isolation**: The backend extracts the `user.id` from the verified token and injects it into every SQL query, guaranteeing users never see each other's tasks.
 
 ---
 
@@ -33,22 +50,16 @@ A production-ready, full-stack CRUD application for managing tasks, now secured 
 
 The API is fully documented via Swagger at `http://localhost:3000/docs`.
 
-| Method | Path | Auth Required? | Description | Status Codes |
-|---|---|---|---|---|
-| **POST** | `/auth/signup` | No | Create a new user account | 201 Created / 400 Bad Request |
-| **POST** | `/auth/login` | No | Authenticate & return a JWT | 200 OK / 401 Unauthorized / 429 Too Many Requests |
-| **POST** | `/auth/logout` | **Yes** (Bearer) | End the user's session | 204 No Content / 401 Unauthorized |
-| **POST** | `/auth/refresh` | No | Get new access token | 200 OK / 401 Unauthorized |
-| **GET** | `/public/info` | No | Read public data | 200 OK |
-| **GET** | `/protected/profile` | **Yes** (Bearer) | Read private profile data | 200 OK / 401 Unauthorized |
-| **GET** | `/protected/dashboard`| **Yes** (Bearer) | Dashboard data (proves middleware reuse) | 200 OK / 401 Unauthorized |
-| **GET** | `/admin/users` | **Yes** (Bearer + Role) | Admin only route (Stretch Goal) | 200 OK / 401 Unauthorized / 403 Forbidden |
-
-### Stretch Goals Implemented
-
-1. **401 vs 403 (Authorization)**: The `GET /admin/users` endpoint demonstrates the difference. `401 Unauthorized` means "I don't know you" (missing or bad token). `403 Forbidden` means "I know exactly who you are, and you still may not enter" (valid token, but user is not an admin).
-2. **Refresh Tokens**: The `POST /auth/refresh` endpoint exchanges a long-lived refresh token for a new access token. Access tokens are short-lived to limit the window of vulnerability if stolen.
-3. **Rate Limiting**: `POST /auth/login` is protected against brute-force attacks via `express-rate-limit` (max 5 attempts per 15 mins).
+| Method | Path | Auth Required? | Description |
+|---|---|---|---|
+| **POST** | `/auth/signup` | No | Create a new user account (Requires username, email, password) |
+| **POST** | `/auth/login` | No | Authenticate & return a JWT |
+| **POST** | `/auth/logout` | **Yes** (Bearer) | End the user's session |
+| **GET** | `/tasks` | **Yes** (Bearer) | Get all tasks belonging to the logged-in user |
+| **POST** | `/tasks` | **Yes** (Bearer) | Create a new task tied to the user |
+| **PUT** | `/tasks/:id` | **Yes** (Bearer) | Update a task (fails if user doesn't own it) |
+| **DELETE**| `/tasks/:id` | **Yes** (Bearer) | Delete a task (fails if user doesn't own it) |
+| **GET** | `/stats` | **Yes** (Bearer) | Get task statistics scoped to the user |
 
 ---
 
@@ -58,10 +69,8 @@ The API is fully documented via Swagger at `http://localhost:3000/docs`.
 ```bash
 # Copy the example env file
 cp .env.example .env
-
-# Edit .env and add your Supabase credentials
 ```
-> **Note**: Your `.env` file is git-ignored and will never be committed to GitHub.
+Edit `.env` and add your Supabase credentials, including the `SUPABASE_SERVICE_KEY` for local development.
 
 ### 2. Start the Backend
 ```bash
@@ -70,14 +79,20 @@ npm start
 ```
 *The API will start on port 3000.*
 
-### 3. Try it in Swagger
-1. Open `http://localhost:3000/docs`
-2. Run `POST /auth/signup` to create an account
-3. Run `POST /auth/login` and copy the `access_token`
-4. Click the **Authorize** button (padlock icon) at the top of the page and paste the token
-5. Run `GET /protected/profile` directly from the browser
+### 3. Start the Frontend
+Open a new terminal window:
+```bash
+cd frontend
+npm install
+npm run dev
+```
+*The React app will start on port 5173.*
 
-*(Insert Swagger Screenshot Here)*
+### 4. Experience TaskFlow
+1. Open `http://localhost:5173` in your browser.
+2. You will be redirected to the **Signup** page. Create an account.
+3. You will be automatically redirected to the **Login** page. Log in.
+4. Enjoy the beautiful Dashboard and create some tasks!
 
 ---
 
