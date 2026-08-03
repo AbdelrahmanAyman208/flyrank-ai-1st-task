@@ -226,7 +226,7 @@ app.get("/health", (req, res) => {
  *               items:
  *                 $ref: '#/components/schemas/Task'
  */
-app.get("/tasks", requireAuth, (req, res) => {
+app.get("/tasks", requireAuth, async (req, res) => {
   let { search, done, sort, limit, offset } = req.query;
 
   // Parse pagination parameters
@@ -243,7 +243,7 @@ app.get("/tasks", requireAuth, (req, res) => {
     if (isNaN(parsedOffset) || parsedOffset < 0) parsedOffset = undefined;
   }
 
-  const tasks = db.getAllTasks({
+  const tasks = await db.getAllTasks({
     search,
     done,
     sort,
@@ -284,9 +284,9 @@ app.get("/tasks", requireAuth, (req, res) => {
  *             schema:
  *               $ref: '#/components/schemas/Error'
  */
-app.get("/tasks/:id", requireAuth, (req, res) => {
+app.get("/tasks/:id", requireAuth, async (req, res) => {
   const id = parseInt(req.params.id, 10);
-  const task = db.getTaskById(id, req.user.id);
+  const task = await db.getTaskById(id, req.user.id);
   if (!task) {
     return res.status(404).json({ error: `Task ${req.params.id} not found` });
   }
@@ -321,7 +321,7 @@ app.get("/tasks/:id", requireAuth, (req, res) => {
  *             schema:
  *               $ref: '#/components/schemas/Error'
  */
-app.post("/tasks", requireAuth, (req, res) => {
+app.post("/tasks", requireAuth, async (req, res) => {
   const { title, deadline } = req.body;
 
   if (title === undefined || title === null) {
@@ -344,7 +344,7 @@ app.post("/tasks", requireAuth, (req, res) => {
     parsedDeadline = deadline;
   }
 
-  const task = db.insertTask(title.trim(), parsedDeadline, req.user.id);
+  const task = await db.insertTask(title.trim(), parsedDeadline, req.user.id);
   res.status(201).json(task);
 });
 
@@ -388,7 +388,7 @@ app.post("/tasks", requireAuth, (req, res) => {
  *             schema:
  *               $ref: '#/components/schemas/Error'
  */
-app.put("/tasks/:id", requireAuth, (req, res) => {
+app.put("/tasks/:id", requireAuth, async (req, res) => {
   const id = parseInt(req.params.id, 10);
 
   const { title, done, deadline } = req.body;
@@ -431,7 +431,7 @@ app.put("/tasks/:id", requireAuth, (req, res) => {
   if (done !== undefined) fields.done = done;
   if (deadline !== undefined) fields.deadline = deadline;
 
-  const task = db.updateTask(id, req.user.id, fields);
+  const task = await db.updateTask(id, req.user.id, fields);
   if (!task) {
     return res.status(404).json({ error: `Task ${req.params.id} not found` });
   }
@@ -463,9 +463,9 @@ app.put("/tasks/:id", requireAuth, (req, res) => {
  *             schema:
  *               $ref: '#/components/schemas/Error'
  */
-app.delete("/tasks/:id", requireAuth, (req, res) => {
+app.delete("/tasks/:id", requireAuth, async (req, res) => {
   const id = parseInt(req.params.id, 10);
-  const deleted = db.deleteTask(id, req.user.id);
+  const deleted = await db.deleteTask(id, req.user.id);
   if (!deleted) {
     return res.status(404).json({ error: `Task ${req.params.id} not found` });
   }
@@ -489,8 +489,8 @@ app.delete("/tasks/:id", requireAuth, (req, res) => {
  *             schema:
  *               $ref: '#/components/schemas/Stats'
  */
-app.get("/stats", requireAuth, (req, res) => {
-  const stats = db.getStats(req.user.id);
+app.get("/stats", requireAuth, async (req, res) => {
+  const stats = await db.getStats(req.user.id);
   res.json(stats);
 });
 

@@ -1,157 +1,88 @@
 // ─────────────────────────────────────────────────────────
-//  db.js — SQLite data-access layer (sql.js)
+//  db.js — PostgreSQL data-access layer (node-postgres / pg)
 //  All SQL lives here. server.js never writes raw queries.
-//
-//  sql.js is a pure-JS SQLite compiled from C via Emscripten.
-//  No native add-ons, no Visual Studio — works everywhere.
-//  We persist manually to tasks.db after every write operation.
 // ─────────────────────────────────────────────────────────
 
-const initSqlJs = require("sql.js");
-const fs = require("fs");
-const path = require("path");
+require("dotenv").config();
+const { Pool } = require("pg");
 
-const DB_PATH = path.join(__dirname, "tasks.db");
-
-let db; // sql.js Database instance
-
-// ─────────────────── helpers ───────────────────
+const pool = new Pool({
+  connectionString:
+    process.env.DATABASE_URL ||
+    `postgresql://${process.env.POSTGRES_USER || "postgres"}:${process.env.POSTGRES_PASSWORD || "dev"}@${process.env.POSTGRES_HOST || "localhost"}:${process.env.POSTGRES_PORT || 5432}/${process.env.POSTGRES_DB || "tasks"}`,
+});
 
 /**
- * Convert a sql.js result row (done = 0|1) to an API-friendly object.
- * sql.js returns rows as plain objects when using db.exec() with
- * columns + values, but our helpers use statement-based approach.
+ * Convert a Postgres result row to an API-friendly task object.
  */
 function toApiTask(row) {
   if (!row) return null;
   return {
     id: row.id,
     title: row.title,
-    done: row.done === 1,
-    deadline: row.deadline ?? null,
-    created_at: row.created_at,
-    updated_at: row.updated_at,
+    done: Boolean(row.done),
+    deadline: row.deadline ? new Date(row.deadline).toISOString() : null,
+    created_at: row.created_at ? new Date(row.created_at).toISOString() : null,
+    updated_at: row.updated_at ? new Date(row.updated_at).toISOString() : null,
   };
 }
 
 /**
- * Run a SELECT that returns multiple rows as an array of objects.
+ * Initialize database schema and indexes.
+ * Includes connection retry logic for Docker container startup.
  */
-function queryAll(sql, params = []) {
-  const stmt = db.prepare(sql);
-  stmt.bind(params);
-  const rows = [];
-  while (stmt.step()) {
-    rows.push(stmt.getAsObject());
+async function initializeDatabase(retries = 10, delay = 2000) {
+  for (let i = 0; i < retries; i++) {
+    try {
+      const client = await pool.connect();
+      try {
+        await client.query(`
+          CREATE TABLE IF NOT EXISTS tasks (
+            id         SERIAL PRIMARY KEY,
+            user_id    VARCHAR(255) NOT NULL,
+            title      VARCHAR(255) NOT NULL,
+            done       BOOLEAN NOT NULL DEFAULT FALSE,
+            deadline   TIMESTAMPTZ DEFAULT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+          );
+        `);
+
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_tasks_user_id ON tasks(user_id);`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_tasks_done ON tasks(done);`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_tasks_title ON tasks(title);`);
+
+        console.log("PostgreSQL database initialized and schema ready.");
+        return;
+      } finally {
+        client.release();
+      }
+    } catch (err) {
+      console.warn(`Database connection attempt ${i + 1}/${retries} failed: ${err.message}. Retrying in ${delay / 1000}s...`);
+      if (i === retries - 1) throw err;
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
   }
-  stmt.free();
-  return rows;
 }
-
-/**
- * Run a SELECT that returns a single row as an object (or null).
- */
-function queryOne(sql, params = []) {
-  const stmt = db.prepare(sql);
-  stmt.bind(params);
-  let row = null;
-  if (stmt.step()) {
-    row = stmt.getAsObject();
-  }
-  stmt.free();
-  return row;
-}
-
-/**
- * Run an INSERT / UPDATE / DELETE and persist to disk.
- */
-function runSql(sql, params = []) {
-  db.run(sql, params);
-  persist();
-}
-
-/**
- * Write the current database to disk.
- */
-function persist() {
-  const data = db.export();
-  const buffer = Buffer.from(data);
-  fs.writeFileSync(DB_PATH, buffer);
-}
-
-// ─────────────────── initialisation ───────────────────
-
-/**
- * Open (or create) the database, create the tasks table if missing,
- * and seed three example tasks only when the table is empty.
- *
- * Must be awaited — sql.js initialisation is async.
- */
-async function initializeDatabase() {
-  const SQL = await initSqlJs();
-
-  // Load existing database file if present
-  if (fs.existsSync(DB_PATH)) {
-    const fileBuffer = fs.readFileSync(DB_PATH);
-    db = new SQL.Database(fileBuffer);
-    console.log(`Loaded existing database from ${DB_PATH}`);
-  } else {
-    db = new SQL.Database();
-    console.log("Created new in-memory database (will persist to disk).");
-  }
-
-  // Create table if it doesn't exist
-  db.run(`
-    CREATE TABLE IF NOT EXISTS tasks (
-      id         INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id    TEXT    NOT NULL,
-      title      TEXT    NOT NULL,
-      done       INTEGER NOT NULL DEFAULT 0,
-      deadline   TEXT    DEFAULT NULL,
-      created_at TEXT    NOT NULL DEFAULT (datetime('now')),
-      updated_at TEXT    NOT NULL DEFAULT (datetime('now'))
-    );
-  `);
-
-  // Create indices for faster filtering and sorting
-  db.run(`CREATE INDEX IF NOT EXISTS idx_tasks_user_id ON tasks(user_id);`);
-  db.run(`CREATE INDEX IF NOT EXISTS idx_tasks_done ON tasks(done);`);
-  db.run(`CREATE INDEX IF NOT EXISTS idx_tasks_title ON tasks(title);`);
-
-  // Seeding removed: tasks now require a specific authenticated user_id.
-
-  // Persist to disk
-  persist();
-  console.log(`SQLite database ready at ${DB_PATH}`);
-}
-
-// ─────────────────── READ ───────────────────
 
 /**
  * Return tasks with optional search, filter, sort, and pagination.
- *
- * @param {object} filters
- * @param {string}  [filters.search]  — partial title match (LIKE)
- * @param {string}  [filters.done]    — "true" | "false"
- * @param {string}  [filters.sort]    — "title" for alphabetical
- * @param {number}  [filters.limit]   — max rows
- * @param {number}  [filters.offset]  — rows to skip
  */
-function getAllTasks({ search, done, sort, limit, offset, userId } = {}) {
-  const clauses = ["user_id = ?"];
+async function getAllTasks({ search, done, sort, limit, offset, userId } = {}) {
+  const clauses = ["user_id = $1"];
   const params = [userId];
+  let paramIdx = 2;
 
-  // ★ Bonus: search
   if (search !== undefined && search !== "") {
-    clauses.push("title LIKE '%' || ? || '%'");
-    params.push(search);
+    clauses.push(`title ILIKE $${paramIdx}`);
+    params.push(`%${search}%`);
+    paramIdx++;
   }
 
-  // ★ Bonus: filter by done
   if (done === "true") {
-    clauses.push("done = 1");
+    clauses.push(`done = TRUE`);
   } else if (done === "false") {
-    clauses.push("done = 0");
+    clauses.push(`done = FALSE`);
   }
 
   let sql = "SELECT * FROM tasks";
@@ -159,131 +90,125 @@ function getAllTasks({ search, done, sort, limit, offset, userId } = {}) {
     sql += " WHERE " + clauses.join(" AND ");
   }
 
-  // ★ Bonus: sort
   if (sort === "title") {
-    sql += " ORDER BY title COLLATE NOCASE ASC";
+    sql += " ORDER BY title ASC";
   } else {
     sql += " ORDER BY id ASC";
   }
 
-  // Pagination
   if (limit !== undefined) {
-    sql += " LIMIT ?";
+    sql += ` LIMIT $${paramIdx}`;
     params.push(limit);
-  }
-  if (offset !== undefined) {
-    sql += " OFFSET ?";
-    params.push(offset);
+    paramIdx++;
   }
 
-  const rows = queryAll(sql, params);
+  if (offset !== undefined) {
+    sql += ` OFFSET $${paramIdx}`;
+    params.push(offset);
+    paramIdx++;
+  }
+
+  const { rows } = await pool.query(sql, params);
   return rows.map(toApiTask);
 }
 
 /**
  * Return a single task by id, or null if not found.
  */
-function getTaskById(id, userId) {
-  const row = queryOne("SELECT * FROM tasks WHERE id = ? AND user_id = ?", [id, userId]);
-  return toApiTask(row);
+async function getTaskById(id, userId) {
+  const { rows } = await pool.query(
+    "SELECT * FROM tasks WHERE id = $1 AND user_id = $2",
+    [id, userId]
+  );
+  return toApiTask(rows[0] || null);
 }
-
-// ─────────────────── CREATE ───────────────────
 
 /**
  * Insert a new task and return the full row.
  */
-function insertTask(title, deadline, userId) {
-  runSql(
-    "INSERT INTO tasks (title, done, deadline, user_id) VALUES (?, 0, ?, ?)",
-    [title, deadline ?? null, userId]
+async function insertTask(title, deadline, userId) {
+  const { rows } = await pool.query(
+    `INSERT INTO tasks (title, done, deadline, user_id)
+     VALUES ($1, FALSE, $2, $3)
+     RETURNING *`,
+    [title, deadline ? new Date(deadline) : null, userId]
   );
-
-  // Get the last inserted row id
-  const lastIdRow = queryOne("SELECT last_insert_rowid() AS id");
-  return getTaskById(lastIdRow.id, userId);
+  return toApiTask(rows[0]);
 }
-
-// ─────────────────── UPDATE ───────────────────
 
 /**
  * Update specified fields of a task. Returns the updated row, or null if not found.
- *
- * @param {number} id
- * @param {object} fields — { title?, done?, deadline? }
  */
-function updateTask(id, userId, fields) {
-  // Check existence first
-  const existing = queryOne("SELECT * FROM tasks WHERE id = ? AND user_id = ?", [id, userId]);
+async function updateTask(id, userId, fields) {
+  const existing = await getTaskById(id, userId);
   if (!existing) return null;
 
   const sets = [];
   const params = [];
+  let paramIdx = 1;
 
   if (fields.title !== undefined) {
-    sets.push("title = ?");
+    sets.push(`title = $${paramIdx}`);
     params.push(fields.title);
+    paramIdx++;
   }
 
   if (fields.done !== undefined) {
-    sets.push("done = ?");
-    params.push(fields.done ? 1 : 0);
+    sets.push(`done = $${paramIdx}`);
+    params.push(Boolean(fields.done));
+    paramIdx++;
   }
 
   if (fields.deadline !== undefined) {
-    sets.push("deadline = ?");
-    params.push(fields.deadline);
+    sets.push(`deadline = $${paramIdx}`);
+    params.push(fields.deadline ? new Date(fields.deadline) : null);
+    paramIdx++;
   }
 
-  // ★ Bonus: always bump updated_at
-  sets.push("updated_at = datetime('now')");
+  sets.push(`updated_at = NOW()`);
 
-  const sql = `UPDATE tasks SET ${sets.join(", ")} WHERE id = ? AND user_id = ?`;
   params.push(id, userId);
-  runSql(sql, params);
+  const sql = `UPDATE tasks SET ${sets.join(", ")} WHERE id = $${paramIdx} AND user_id = $${paramIdx + 1} RETURNING *`;
 
-  return getTaskById(id, userId);
+  const { rows } = await pool.query(sql, params);
+  return toApiTask(rows[0] || null);
 }
-
-// ─────────────────── DELETE ───────────────────
 
 /**
  * Delete a task by id. Returns true if a row was deleted, false otherwise.
  */
-function deleteTask(id, userId) {
-  // Check existence first (sql.js doesn't expose changes count easily)
-  const existing = queryOne("SELECT * FROM tasks WHERE id = ? AND user_id = ?", [id, userId]);
-  if (!existing) return false;
-
-  runSql("DELETE FROM tasks WHERE id = ? AND user_id = ?", [id, userId]);
-  return true;
+async function deleteTask(id, userId) {
+  const { rowCount } = await pool.query(
+    "DELETE FROM tasks WHERE id = $1 AND user_id = $2",
+    [id, userId]
+  );
+  return rowCount > 0;
 }
-
-// ─────────────────── STATS (★ Bonus) ───────────────────
 
 /**
  * Return aggregate task statistics using SQL COUNT.
  */
-function getStats(userId) {
-  const row = queryOne(`
-    SELECT
-      COUNT(*)                                     AS total,
-      SUM(CASE WHEN done = 1 THEN 1 ELSE 0 END)   AS completed,
-      SUM(CASE WHEN done = 0 THEN 1 ELSE 0 END)   AS pending
-    FROM tasks
-    WHERE user_id = ?
-  `, [userId]);
+async function getStats(userId) {
+  const { rows } = await pool.query(
+    `SELECT
+       COUNT(*)::int                                        AS total,
+       COUNT(*) FILTER (WHERE done = TRUE)::int             AS completed,
+       COUNT(*) FILTER (WHERE done = FALSE)::int            AS pending
+     FROM tasks
+     WHERE user_id = $1`,
+    [userId]
+  );
 
+  const row = rows[0] || {};
   return {
-    total: row.total,
-    completed: row.completed ?? 0,
-    pending: row.pending ?? 0,
+    total: row.total || 0,
+    completed: row.completed || 0,
+    pending: row.pending || 0,
   };
 }
 
-// ─────────────────── exports ───────────────────
-
 module.exports = {
+  pool,
   initializeDatabase,
   getAllTasks,
   getTaskById,
