@@ -11,6 +11,7 @@ const authRouter = require("./routes/auth");
 const publicRouter = require("./routes/public");
 const protectedRouter = require("./routes/protected");
 const adminRouter = require("./routes/admin");
+const requireAuth = require("./middleware/auth");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -183,6 +184,8 @@ app.get("/health", (req, res) => {
  *   get:
  *     summary: List tasks with filtering, search, sorting, and pagination
  *     tags: [Tasks]
+ *     security:
+ *       - BearerAuth: []
  *     parameters:
  *       - in: query
  *         name: search
@@ -223,7 +226,7 @@ app.get("/health", (req, res) => {
  *               items:
  *                 $ref: '#/components/schemas/Task'
  */
-app.get("/tasks", (req, res) => {
+app.get("/tasks", requireAuth, (req, res) => {
   let { search, done, sort, limit, offset } = req.query;
 
   // Parse pagination parameters
@@ -246,6 +249,7 @@ app.get("/tasks", (req, res) => {
     sort,
     limit: parsedLimit,
     offset: parsedOffset,
+    userId: req.user.id,
   });
 
   res.json(tasks);
@@ -257,6 +261,8 @@ app.get("/tasks", (req, res) => {
  *   get:
  *     summary: Get a task by ID
  *     tags: [Tasks]
+ *     security:
+ *       - BearerAuth: []
  *     parameters:
  *       - in: path
  *         name: id
@@ -278,9 +284,9 @@ app.get("/tasks", (req, res) => {
  *             schema:
  *               $ref: '#/components/schemas/Error'
  */
-app.get("/tasks/:id", (req, res) => {
+app.get("/tasks/:id", requireAuth, (req, res) => {
   const id = parseInt(req.params.id, 10);
-  const task = db.getTaskById(id);
+  const task = db.getTaskById(id, req.user.id);
   if (!task) {
     return res.status(404).json({ error: `Task ${req.params.id} not found` });
   }
@@ -293,6 +299,8 @@ app.get("/tasks/:id", (req, res) => {
  *   post:
  *     summary: Create a task
  *     tags: [Tasks]
+ *     security:
+ *       - BearerAuth: []
  *     requestBody:
  *       required: true
  *       content:
@@ -313,7 +321,7 @@ app.get("/tasks/:id", (req, res) => {
  *             schema:
  *               $ref: '#/components/schemas/Error'
  */
-app.post("/tasks", (req, res) => {
+app.post("/tasks", requireAuth, (req, res) => {
   const { title, deadline } = req.body;
 
   if (title === undefined || title === null) {
@@ -336,7 +344,7 @@ app.post("/tasks", (req, res) => {
     parsedDeadline = deadline;
   }
 
-  const task = db.insertTask(title.trim(), parsedDeadline);
+  const task = db.insertTask(title.trim(), parsedDeadline, req.user.id);
   res.status(201).json(task);
 });
 
@@ -346,6 +354,8 @@ app.post("/tasks", (req, res) => {
  *   put:
  *     summary: Update a task
  *     tags: [Tasks]
+ *     security:
+ *       - BearerAuth: []
  *     parameters:
  *       - in: path
  *         name: id
@@ -378,7 +388,7 @@ app.post("/tasks", (req, res) => {
  *             schema:
  *               $ref: '#/components/schemas/Error'
  */
-app.put("/tasks/:id", (req, res) => {
+app.put("/tasks/:id", requireAuth, (req, res) => {
   const id = parseInt(req.params.id, 10);
 
   const { title, done, deadline } = req.body;
@@ -421,7 +431,7 @@ app.put("/tasks/:id", (req, res) => {
   if (done !== undefined) fields.done = done;
   if (deadline !== undefined) fields.deadline = deadline;
 
-  const task = db.updateTask(id, fields);
+  const task = db.updateTask(id, req.user.id, fields);
   if (!task) {
     return res.status(404).json({ error: `Task ${req.params.id} not found` });
   }
@@ -435,6 +445,8 @@ app.put("/tasks/:id", (req, res) => {
  *   delete:
  *     summary: Delete a task
  *     tags: [Tasks]
+ *     security:
+ *       - BearerAuth: []
  *     parameters:
  *       - in: path
  *         name: id
@@ -451,9 +463,9 @@ app.put("/tasks/:id", (req, res) => {
  *             schema:
  *               $ref: '#/components/schemas/Error'
  */
-app.delete("/tasks/:id", (req, res) => {
+app.delete("/tasks/:id", requireAuth, (req, res) => {
   const id = parseInt(req.params.id, 10);
-  const deleted = db.deleteTask(id);
+  const deleted = db.deleteTask(id, req.user.id);
   if (!deleted) {
     return res.status(404).json({ error: `Task ${req.params.id} not found` });
   }
@@ -466,6 +478,8 @@ app.delete("/tasks/:id", (req, res) => {
  *   get:
  *     summary: Task statistics
  *     tags: [Tasks]
+ *     security:
+ *       - BearerAuth: []
  *     description: Returns aggregate counts of total, completed, and pending tasks using SQL COUNT.
  *     responses:
  *       200:
@@ -475,8 +489,8 @@ app.delete("/tasks/:id", (req, res) => {
  *             schema:
  *               $ref: '#/components/schemas/Stats'
  */
-app.get("/stats", (req, res) => {
-  const stats = db.getStats();
+app.get("/stats", requireAuth, (req, res) => {
+  const stats = db.getStats(req.user.id);
   res.json(stats);
 });
 

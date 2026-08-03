@@ -1,0 +1,8 @@
+{
+  "name": "ai-version",
+  "version": "1.0.0",
+  "dependencies": {
+    "better-sqlite3": "^11.2.1",
+    "express": "^4.21.0"
+  }
+}

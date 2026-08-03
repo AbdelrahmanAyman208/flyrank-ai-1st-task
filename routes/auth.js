@@ -34,8 +34,11 @@ const loginLimiter = rateLimit({
  *         application/json:
  *           schema:
  *             type: object
- *             required: [email, password]
+ *             required: [email, password, username]
  *             properties:
+ *               username:
+ *                 type: string
+ *                 example: johndoe
  *               email:
  *                 type: string
  *                 format: email
@@ -69,13 +72,20 @@ const loginLimiter = rateLimit({
  *               $ref: '#/components/schemas/Error'
  */
 router.post("/signup", async (req, res) => {
-  const { email, password } = req.body;
+  const { email, password, username } = req.body;
 
   // Validate required fields
-  if (!email || !password) {
+  if (!email || !password || !username) {
     return res
       .status(400)
-      .json({ error: "Email and password are required" });
+      .json({ error: "Username, email, and password are required" });
+  }
+
+  // Validate username
+  if (typeof username !== "string" || username.trim().length < 2) {
+    return res
+      .status(400)
+      .json({ error: "Username must be at least 2 characters" });
   }
 
   // Validate email format (basic check)
@@ -90,7 +100,14 @@ router.post("/signup", async (req, res) => {
       .json({ error: "Password must be at least 6 characters" });
   }
 
-  const { data, error } = await supabase.auth.signUp({ email, password });
+  const adminSupabase = require("../adminSupabase");
+  
+  const { data, error } = await adminSupabase.auth.admin.createUser({
+    email,
+    password,
+    email_confirm: true,
+    user_metadata: { username: username.trim() },
+  });
 
   if (error) {
     return res.status(400).json({ error: error.message });
