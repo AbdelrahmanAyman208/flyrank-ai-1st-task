@@ -5,11 +5,24 @@
 
 require("dotenv").config();
 const { Pool } = require("pg");
+const Redis = require("ioredis");
 
 const pool = new Pool({
   connectionString:
     process.env.DATABASE_URL ||
     `postgresql://${process.env.POSTGRES_USER || "postgres"}:${process.env.POSTGRES_PASSWORD || "dev"}@${process.env.POSTGRES_HOST || "localhost"}:${process.env.POSTGRES_PORT || 5432}/${process.env.POSTGRES_DB || "tasks"}`,
+});
+
+// Redis client — used for optional caching / health checks
+const redis = new Redis({
+  host: process.env.REDIS_HOST || "localhost",
+  port: parseInt(process.env.REDIS_PORT || "6379", 10),
+  maxRetriesPerRequest: 3,
+  retryStrategy(times) {
+    if (times > 5) return null; // stop retrying after 5 attempts
+    return Math.min(times * 500, 3000);
+  },
+  lazyConnect: true, // don't connect until we explicitly call .connect()
 });
 
 /**
@@ -27,15 +40,25 @@ function toApiTask(row) {
   };
 }
 
+// ──────── Seed data (inserted only when table is empty) ────────
+const SEED_TASKS = [
+  { title: "Learn Docker & Docker Compose", done: false },
+  { title: "Connect Node.js to PostgreSQL", done: false },
+  { title: "Build containerized task API", done: false },
+];
+
 /**
- * Initialize database schema and indexes.
+ * Initialize database schema, indexes, and seed data.
  * Includes connection retry logic for Docker container startup.
+ * Also attempts to PING Redis on startup.
  */
 async function initializeDatabase(retries = 10, delay = 2000) {
+  // ── PostgreSQL ──
   for (let i = 0; i < retries; i++) {
     try {
       const client = await pool.connect();
       try {
+        // Create table
         await client.query(`
           CREATE TABLE IF NOT EXISTS tasks (
             id         SERIAL PRIMARY KEY,
@@ -48,15 +71,38 @@ async function initializeDatabase(retries = 10, delay = 2000) {
           );
         `);
 
+        // Indexes
         await client.query(`CREATE INDEX IF NOT EXISTS idx_tasks_user_id ON tasks(user_id);`);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_tasks_done ON tasks(done);`);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_tasks_title ON tasks(title);`);
 
+        // Seed-once rule: insert 3 example tasks only if the table is empty
+        const { rows: countRows } = await client.query("SELECT COUNT(*)::int AS count FROM tasks");
+        if (countRows[0].count === 0) {
+          for (const seed of SEED_TASKS) {
+            await client.query(
+              "INSERT INTO tasks (user_id, title, done) VALUES ($1, $2, $3)",
+              ["seed-user", seed.title, seed.done]
+            );
+          }
+          console.log("Seeded 3 example tasks (first run).");
+        }
+
         console.log("PostgreSQL database initialized and schema ready.");
-        return;
       } finally {
         client.release();
       }
+
+      // ── Redis PING (optional extra) ──
+      try {
+        await redis.connect();
+        const pong = await redis.ping();
+        console.log(`Redis connected: ${pong}`);
+      } catch (redisErr) {
+        console.warn(`Redis not available (optional): ${redisErr.message}`);
+      }
+
+      return; // success — exit retry loop
     } catch (err) {
       console.warn(`Database connection attempt ${i + 1}/${retries} failed: ${err.message}. Retrying in ${delay / 1000}s...`);
       if (i === retries - 1) throw err;

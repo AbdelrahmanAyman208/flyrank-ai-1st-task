@@ -1,6 +1,6 @@
-# FlyRank TaskFlow: Full-Stack Task Management System (A3 Postgres + Docker)
+# FlyRank TaskFlow: Full-Stack Task Management System (A3 — Postgres + Docker)
 
-A production-ready, full-stack CRUD application for managing tasks, secured with Supabase Authentication, running on PostgreSQL in Docker with single-command Docker Compose orchestration.
+A production-ready, full-stack CRUD application for managing tasks, secured with Supabase Authentication, powered by **PostgreSQL** running in Docker, and orchestrated with a single `docker compose up` command.
 
 ## 🚀 Architecture & Tech Stack
 
@@ -13,27 +13,20 @@ A production-ready, full-stack CRUD application for managing tasks, secured with
 ### Backend (Node.js + Express)
 - **Framework**: Express.js REST API.
 - **Identity Provider**: Supabase Auth (utilizing Admin API for rate-limit bypass).
-- **Security**: 
-  - User accounts and token signing managed externally by Supabase.
-  - API verifies JWTs locally via `supabase.auth.getUser()`.
-  - Reusable Express middleware (`requireAuth`) protects private routes.
-- **Documentation**: Swagger UI with interactive Bearer token authorization.
+- **Database Driver**: `pg` (node-postgres) with connection pooling (`pg.Pool`).
+- **Security**: Reusable Express middleware (`requireAuth`) protects private routes.
+- **Documentation**: Swagger UI with interactive Bearer token authorization at `/docs`.
 
 ### Database Layer (PostgreSQL in Docker)
-- **Engine**: PostgreSQL (`postgres:16-alpine` running inside Docker).
-- **Database Driver**: `pg` (node-postgres) with connection pooling (`pg.Pool`).
-- **Containerization**: `compose.yaml` orchestrates both the PostgreSQL database container and the Node.js API container.
-- **Multi-Tenancy**: Every task is securely tied to a `user_id`. Users can *only* read, create, update, and delete their own tasks.
-- **Data Persistence**: Named Docker volume (`taskdata`) persists database rows across container restarts.
+- **Engine**: PostgreSQL 16 (`postgres:16-alpine`) running inside a Docker container.
+- **Parameterized Queries**: All SQL uses `$1, $2` positional parameters — zero string concatenation.
+- **Seed-Once Rule**: On first run, 3 example tasks are automatically inserted if the table is empty.
+- **Multi-Tenancy**: Every task is scoped to a `user_id`. Users can only access their own tasks.
+- **Data Persistence**: Named Docker volume (`taskdata`) ensures data survives `docker compose down` and `up`.
 
----
-
-## 🎨 Premium Glassmorphism UI
-The frontend features:
-- A bright, professional Light Glassmorphism theme.
-- Dynamic floating mesh backgrounds and particle animations.
-- Frosted glass cards (`backdrop-filter: blur(24px)`).
-- Seamless routing between Login, Signup, and Dashboard screens.
+### Redis (Optional Extra)
+- **Engine**: Redis 7 (`redis:7-alpine`) running as a container service.
+- **Health Check**: On startup, the app PINGs Redis and logs the connection status.
 
 ---
 
@@ -43,45 +36,73 @@ The frontend features:
 2. **Log in**: Supabase authenticates credentials and returns a JWT access token.
 3. **The Request**: React frontend automatically injects `Authorization: Bearer <token>` in all requests.
 4. **Verification**: Express middleware verifies the token with Supabase.
-5. **Data Isolation**: Backend injects `user.id` into PostgreSQL parameter queries (`$1, $2`), preventing cross-tenant data leaks.
+5. **Data Isolation**: Backend injects `user.id` into PostgreSQL parameterized queries (`$1, $2`).
 
 ---
 
 ## 🔌 API Endpoints & Auth Requirements
 
-The API is fully documented via Swagger at `http://localhost:3000/docs`.
+| Method | Path | Auth Required? | Description | Status Codes |
+|---|---|---|---|---|
+| **POST** | `/auth/signup` | No | Create a new user account | 201 / 400 |
+| **POST** | `/auth/login` | No | Authenticate & return a JWT | 200 / 401 |
+| **POST** | `/auth/logout` | **Yes** (Bearer) | End the user's session | 204 / 401 |
+| **GET** | `/tasks` | **Yes** (Bearer) | Get all tasks for the logged-in user | 200 |
+| **GET** | `/tasks/:id` | **Yes** (Bearer) | Get a single task by ID | 200 / 404 |
+| **POST** | `/tasks` | **Yes** (Bearer) | Create a new task | 201 / 400 |
+| **PUT** | `/tasks/:id` | **Yes** (Bearer) | Update a task | 200 / 400 / 404 |
+| **DELETE**| `/tasks/:id` | **Yes** (Bearer) | Delete a task | 204 / 404 |
+| **GET** | `/stats` | **Yes** (Bearer) | Get task statistics | 200 |
 
-| Method | Path | Auth Required? | Description |
-|---|---|---|---|
-| **POST** | `/auth/signup` | No | Create a new user account |
-| **POST** | `/auth/login` | No | Authenticate & return a JWT |
-| **POST** | `/auth/logout` | **Yes** (Bearer) | End the user's session |
-| **GET** | `/tasks` | **Yes** (Bearer) | Get all tasks belonging to the logged-in user |
-| **POST** | `/tasks` | **Yes** (Bearer) | Create a new task tied to the user |
-| **PUT** | `/tasks/:id` | **Yes** (Bearer) | Update a task (fails if user doesn't own it) |
-| **DELETE**| `/tasks/:id` | **Yes** (Bearer) | Delete a task (fails if user doesn't own it) |
-| **GET** | `/stats` | **Yes** (Bearer) | Get task statistics scoped to the user |
+### Example `curl` output:
+```bash
+# Create a task (returns 201)
+curl -i -X POST http://localhost:3000/tasks \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <YOUR_TOKEN>" \
+  -d '{"title": "My first Postgres task"}'
+
+# Get all tasks (returns 200)
+curl -i http://localhost:3000/tasks \
+  -H "Authorization: Bearer <YOUR_TOKEN>"
+
+# Delete a task (returns 204)
+curl -i -X DELETE http://localhost:3000/tasks/1 \
+  -H "Authorization: Bearer <YOUR_TOKEN>"
+
+# Request with unknown ID (returns 404)
+curl -i http://localhost:3000/tasks/999 \
+  -H "Authorization: Bearer <YOUR_TOKEN>"
+```
 
 ---
 
-## 🐳 Quick Start (One Command Docker Setup)
+## 🐳 Quick Start — One Command for the Whole Stack
 
 ### 1. Setup Environment
 ```bash
 cp .env.example .env
+# Edit .env and add your Supabase credentials
 ```
-Ensure your `.env` contains your Supabase keys and database configuration.
 
-### 2. Start Full Stack with Docker Compose
+### 2. Start Everything
 ```bash
 docker compose up --build
 ```
-This single command:
-- Launches a PostgreSQL 16 container (`taskdb`) with port `5432` and persistent volume `taskdata`.
-- Waits for Postgres healthcheck to pass.
-- Builds and starts the Node.js API container (`taskapp`) on port `3000`.
+This single command launches:
+- **PostgreSQL 16** container (`taskdb`) on port `5432` with persistent volume `taskdata`.
+- **Redis 7** container (`taskredis`) on port `6379` with healthcheck.
+- **Node.js API** container (`taskapp`) on port `3000`, waiting for both services to be healthy.
 
-### 3. Start Frontend (Local Dev)
+### 3. Verify Data Persistence
+```bash
+# Create some tasks via curl or the frontend...
+docker compose down
+docker compose up
+# Your tasks are still there — the volume kept them.
+```
+
+### 4. Start Frontend (Local Dev)
 ```bash
 cd frontend
 npm install
@@ -89,19 +110,66 @@ npm run dev
 ```
 Open `http://localhost:5173` to interact with TaskFlow!
 
+### 5. Inspect the Database Directly
+```bash
+docker exec -it taskdb psql -U postgres -d tasks
+# Inside psql:
+\dt              -- lists the tasks table
+SELECT * FROM tasks;  -- shows all rows
+\q               -- exit
+```
+
 ---
 
-## 🤖 The AI Rematch (Stage 7)
+## 📁 Project Structure
+```
+├── server.js           # Express API server
+├── db.js               # PostgreSQL data-access layer (all SQL lives here)
+├── middleware/auth.js   # Reusable JWT verification middleware
+├── routes/
+│   ├── auth.js         # Signup, Login, Logout, Refresh
+│   ├── protected.js    # /protected/profile, /protected/dashboard
+│   ├── public.js       # /public/info
+│   └── admin.js        # /admin/users (stretch goal)
+├── supabaseClient.js   # Supabase anon client
+├── adminSupabase.js    # Supabase admin client (service role)
+├── Dockerfile          # Node.js container build
+├── compose.yaml        # Docker Compose: db + redis + app
+├── .env.example        # Template for environment variables
+├── .gitignore          # Keeps .env and node_modules out of git
+├── ai-version/         # AI Rematch quarantine folder
+│   └── server.js
+└── frontend/           # React + Vite glassmorphism UI
+    └── src/
+```
 
-I asked an AI to build the identical secured API from a prompt, then diffed its output against my handcrafted version.
+---
+
+## 🤖 The AI Rematch (Stage 6 — A3)
+
+I asked an AI to containerize the same task CRUD API onto Postgres with Docker Compose.
 
 ### The Prompt Used
-> "Write a Node.js Express server that implements authentication using Supabase and stores tasks in PostgreSQL using Docker. Include auth routes, task CRUD routes, middleware, and Swagger UI."
+> "Write a Node.js Express server that stores tasks in PostgreSQL using the `pg` driver. Include a `tasks` table with `id`, `title`, and `done` columns. Create the table if it doesn't exist and seed three example tasks only when the table is empty. Implement the five standard CRUD endpoints (GET /tasks, GET /tasks/:id, POST /tasks, PUT /tasks/:id, DELETE /tasks/:id). Use parameterized queries (`$1, $2`) for safety. Read the database password from a `.env` file — never hardcode it. Add a Dockerfile and compose.yaml with a volume for persistence and one-command startup."
 
 ### AI vs Me Analysis
 
-1. **Token Extraction:** The AI successfully parsed the `Authorization` header and correctly split the `"Bearer "` prefix.
-2. **Security Flaws:** 
-   - The AI didn't configure `.env` validation out of the box.
-   - It did not handle database connection retry loops when Postgres takes a few seconds to initialize in Docker.
-3. **Improved Prompt:** "Ensure database connection retries on container boot, load credentials safely from .env, handle errors cleanly without crashing, and include Swagger annotations."
+| Criterion | My Version | AI Version |
+|---|---|---|
+| **Connection String** | Read from `DATABASE_URL` in `.env` with fallback | ❌ Hardcoded `postgres://postgres:dev@localhost:5432/tasks` |
+| **Seed-Once Rule** | `SELECT COUNT(*)` — seeds only when count = 0 | ❌ Seeds when count < 3 — re-seeds after any delete |
+| **Parameterized Queries** | ✅ `$1, $2` everywhere | ✅ Correct |
+| **Docker Volume** | ✅ Named volume `taskdata` for persistence | ❌ No volume defined — data lost on `docker rm` |
+| **Compose Healthcheck** | ✅ `pg_isready` + `depends_on: service_healthy` | ❌ No healthcheck — app may crash if DB isn't ready |
+| **Connection Retries** | ✅ Retry loop with 10 attempts, 2s delay | ❌ No retry — crashes on first failed connection |
+| **Redis** | ✅ PING on startup, integrated in compose | ❌ Not mentioned at all |
+| **Boolean Coercion** | ✅ `Boolean(row.done)` | ❌ Returns raw `t`/`f` from Postgres |
+
+### What My Prompt Missed
+I forgot to specify:
+- **Connection retry logic** — the AI assumed instant DB availability.
+- **Boolean type coercion** — Postgres returns `t`/`f` for booleans, which needs conversion.
+- **Redis integration** — not part of my original prompt.
+
+### Improved Prompt (One Sentence)
+> "Also include a retry loop for database connection, coerce Postgres boolean values to JSON `true`/`false`, add a Redis service to compose.yaml and PING it on startup, and define a named volume so data persists across container restarts."

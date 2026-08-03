@@ -1,65 +1,89 @@
-const express = require('express');
-const Database = require('better-sqlite3');
+// ─────────────────────────────────────────────────────────
+//  ai-version/server.js — AI-generated A3 Postgres + Docker version
+//  Generated from a prompt to contrast against the hand-built version.
+//  This file lives in quarantine and is NOT part of the main submission.
+// ─────────────────────────────────────────────────────────
+
+const express = require("express");
+const { Pool } = require("pg");
+
 const app = express();
 app.use(express.json());
 
-const db = new Database('tasks.db');
+// Flaw 1: AI hardcoded the connection string instead of reading from .env
+const pool = new Pool({
+  connectionString: "postgres://postgres:dev@localhost:5432/tasks",
+});
 
-// Flaw 1: String-glued SQL later, and wrong schema types
-db.exec(`
+// Table creation — AI got the schema right
+pool.query(`
   CREATE TABLE IF NOT EXISTS tasks (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    title TEXT,
-    done INTEGER,
-    deadline TEXT
+    id    SERIAL PRIMARY KEY,
+    title TEXT NOT NULL,
+    done  BOOLEAN NOT NULL DEFAULT FALSE
   )
 `);
 
-// Flaw 2: Seed runs on EVERY restart, multiplying rows
-const stmt = db.prepare('SELECT COUNT(*) as cnt FROM tasks').get();
-if (stmt.cnt < 3) {
-    db.exec(`
-    INSERT INTO tasks (title, done, deadline) VALUES ('Buy groceries', 0, '2026-07-18');
-    INSERT INTO tasks (title, done, deadline) VALUES ('Read a book', 1, NULL);
-    INSERT INTO tasks (title, done, deadline) VALUES ('Write unit tests', 0, '2026-07-16');
-    `);
-}
+// Flaw 2: AI seeded with a broken check — if a user deletes a task,
+// count drops and it re-seeds on next restart.
+pool.query("SELECT COUNT(*) FROM tasks").then(({ rows }) => {
+  if (parseInt(rows[0].count) < 3) {
+    pool.query("INSERT INTO tasks (title, done) VALUES ('Task 1', false)");
+    pool.query("INSERT INTO tasks (title, done) VALUES ('Task 2', false)");
+    pool.query("INSERT INTO tasks (title, done) VALUES ('Task 3', false)");
+  }
+});
 
-app.get('/tasks', (req, res) => {
-  const rows = db.prepare('SELECT * FROM tasks').all();
-  // Flaw 3: Does not convert done (0/1) to boolean (false/true)
+// GET /tasks — AI used parameterized queries correctly here
+app.get("/tasks", async (req, res) => {
+  const { rows } = await pool.query("SELECT * FROM tasks ORDER BY id");
+  // Flaw 3: AI returned raw rows without boolean coercion
   res.json(rows);
 });
 
-app.get('/tasks/:id', (req, res) => {
-  const row = db.prepare('SELECT * FROM tasks WHERE id = ?').get(req.params.id);
-  if (!row) return res.status(404).json({ error: 'Task not found' });
-  res.json(row);
+// GET /tasks/:id
+app.get("/tasks/:id", async (req, res) => {
+  const { rows } = await pool.query("SELECT * FROM tasks WHERE id = $1", [
+    req.params.id,
+  ]);
+  if (rows.length === 0) return res.status(404).json({ error: "Task not found" });
+  res.json(rows[0]);
 });
 
-app.post('/tasks', (req, res) => {
-  if (!req.body.title) return res.status(400).json({ error: 'Title required' });
-  
-  // Flaw 4: Using string concatenation instead of parameterized query (SQL Injection risk)
-  const query = `INSERT INTO tasks (title, done, deadline) VALUES ('${req.body.title}', 0, '${req.body.deadline || null}')`;
-  db.exec(query);
-  
-  // Flaw 5: Does not return the created task object
-  res.status(201).json({ message: "Created" });
+// POST /tasks
+app.post("/tasks", async (req, res) => {
+  const { title } = req.body;
+  if (!title) return res.status(400).json({ error: "Title required" });
+  const { rows } = await pool.query(
+    "INSERT INTO tasks (title, done) VALUES ($1, false) RETURNING *",
+    [title]
+  );
+  res.status(201).json(rows[0]);
 });
 
-app.put('/tasks/:id', (req, res) => {
-  const { title, done, deadline } = req.body;
-  // Flaw 6: Returns 200 even if the record doesn't exist
-  db.prepare('UPDATE tasks SET title = ?, done = ?, deadline = ? WHERE id = ?')
-    .run(title, done ? 1 : 0, deadline, req.params.id);
-  res.json({ updated: true });
+// PUT /tasks/:id
+app.put("/tasks/:id", async (req, res) => {
+  const { title, done } = req.body;
+  const { rows } = await pool.query(
+    "UPDATE tasks SET title = $1, done = $2 WHERE id = $3 RETURNING *",
+    [title, done, req.params.id]
+  );
+  // Flaw 4: Returns 200 with empty array if task doesn't exist, instead of 404
+  if (rows.length === 0) return res.status(404).json({ error: "Not found" });
+  res.json(rows[0]);
 });
 
-app.delete('/tasks/:id', (req, res) => {
-  const info = db.prepare('DELETE FROM tasks WHERE id = ?').run(req.params.id);
-  if (info.changes === 0) return res.status(404).json({ error: 'Not found' });
+// DELETE /tasks/:id
+app.delete("/tasks/:id", async (req, res) => {
+  const { rowCount } = await pool.query("DELETE FROM tasks WHERE id = $1", [
+    req.params.id,
+  ]);
+  if (rowCount === 0) return res.status(404).json({ error: "Not found" });
   res.status(204).send();
 });
 
-app.listen(3001, () => console.log('AI server running on port 3001'));
+// Flaw 5: No Docker Compose healthcheck or depends_on strategy
+// Flaw 6: No volume defined — data lost on container removal
+// Flaw 7: No Redis integration
+
+app.listen(3001, () => console.log("AI server running on port 3001"));
